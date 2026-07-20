@@ -13,6 +13,18 @@ type ResolvedEpisode = {
 };
 
 const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_", textNodeName: "#text" });
+const MEBIBYTE = 1024 * 1024;
+export const TRANSCRIPTION_CHUNK_BYTES = 20 * MEBIBYTE;
+
+export function firstAudioChunkEnd(
+  audioSize: number,
+  chunkSize = TRANSCRIPTION_CHUNK_BYTES,
+): number {
+  if (!Number.isFinite(audioSize) || audioSize < 0 || !Number.isFinite(chunkSize) || chunkSize <= 0) {
+    throw new Error("The episode audio size could not be processed.");
+  }
+  return Math.min(audioSize, chunkSize);
+}
 
 function list<T>(value: T | T[] | undefined): T[] {
   if (value === undefined) return [];
@@ -112,12 +124,14 @@ async function getOfficialTranscript(url: string): Promise<RawSegment[]> {
 async function transcribeAudio(audioUrl: string): Promise<{ language: string; segments: RawSegment[] }> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("No official transcript was found. Add OPENAI_API_KEY to generate one.");
-  const audioResponse = await fetch(audioUrl);
+  const audioResponse = await fetch(audioUrl, {
+    headers: { range: `bytes=0-${TRANSCRIPTION_CHUNK_BYTES - 1}` },
+  });
   if (!audioResponse.ok) throw new Error("The episode audio could not be downloaded for transcription.");
   const audio = await audioResponse.blob();
-  if (audio.size > 24 * 1024 * 1024) throw new Error("This episode is too large for the MVP transcription limit (24 MB).");
+  const firstChunk = audio.slice(0, firstAudioChunkEnd(audio.size), audio.type);
   const form = new FormData();
-  form.set("file", new File([audio], "episode.mp3", { type: audio.type || "audio/mpeg" }));
+  form.set("file", new File([firstChunk], "episode-opening.mp3", { type: audio.type || "audio/mpeg" }));
   form.set("model", process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1");
   form.set("response_format", "verbose_json");
   form.append("timestamp_granularities[]", "segment");
@@ -193,7 +207,9 @@ export async function getCachedEpisode(sourceUrl: string, targetLanguage: string
   const episode = episodes[0];
   if (!episode) return null;
   const segmentsResponse = await supabaseRequest(`transcript_segments?episode_id=eq.${episode.id}&select=*,translations(*)&translations.target_language=eq.${encodeURIComponent(targetLanguage)}&order=sentence_number.asc`);
-  const rows = await segmentsResponse!.json() as Array<Record<string, any>>;
+  const rows = await segmentsResponse!.json() as Array<Record<string, unknown> & {
+    translations?: Array<{ translated_text?: unknown }>;
+  }>;
   if (!rows.length || rows.some((row) => !row.translations?.[0])) return null;
   return {
     id: String(episode.id), sourceUrl, audioUrl: String(episode.audio_url), title: String(episode.title),
@@ -202,7 +218,7 @@ export async function getCachedEpisode(sourceUrl: string, targetLanguage: string
     cached: true, transcriptSource: episode.transcript_source === "official" ? "official" : "generated",
     segments: rows.map((row) => ({ id: String(row.id), startTime: Number(row.start_time_ms) / 1000,
       endTime: Number(row.end_time_ms) / 1000, originalText: String(row.original_text),
-      translatedText: String(row.translations[0].translated_text) })),
+      translatedText: String(row.translations?.[0]?.translated_text ?? "") })),
   };
 }
 

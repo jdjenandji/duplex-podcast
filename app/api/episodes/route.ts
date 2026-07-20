@@ -2,6 +2,8 @@ import { z } from "zod";
 import { DEMO_URL, getDemoEpisode } from "@/lib/demo";
 import { processEpisode } from "@/lib/pipeline";
 
+export const maxDuration = 300;
+
 const requestSchema = z.object({
   url: z.string().url().max(2_048),
   targetLanguage: z.string().trim().min(2).max(40).regex(/^[\p{L} -]+$/u).default("en"),

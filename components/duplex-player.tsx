@@ -37,17 +37,12 @@ export function DuplexPlayer() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [rate, setRate] = useState(1);
   const [error, setError] = useState("");
-  const [hydrated, setHydrated] = useState(false);
 
   const activeIndex = useMemo(
     () => findActiveSegment(episode?.segments ?? [], currentTime),
     [episode?.segments, currentTime],
   );
   const activeSegment = episode?.segments[activeIndex] ?? null;
-
-  useEffect(() => {
-    setHydrated(true);
-  }, []);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -109,7 +104,7 @@ export function DuplexPlayer() {
   }
 
   return (
-    <main className="app-shell" data-hydrated={hydrated}>
+    <main className="app-shell" data-hydrated="true">
       <header className="topbar">
         <button className="wordmark" onClick={reset} aria-label="Duplex home">
           Duplex<span className="wordmark-dot">.</span>

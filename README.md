@@ -26,7 +26,7 @@ Requirements: Node.js 22.13 or newer and a Supabase project.
 
 The built-in **Try the demo** flow works without OpenAI or Supabase credentials. Real podcast processing requires `OPENAI_API_KEY`. Shared caching requires the three Supabase variables in `.env.example`.
 
-Audio downloads exist only in request memory while OpenAI transcription is running and are not written to disk. The MVP rejects audio larger than 24 MB with a clear error.
+Audio downloads exist only in request memory while OpenAI transcription is running and are not written to disk. When an episode has no official transcript, Duplex transcribes only its opening 20 MB. It requests just that byte range when the podcast host supports range requests and ignores the remainder of the episode.
 
 ## Quality checks
 
