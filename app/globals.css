@@ -34,6 +34,22 @@ button { color: inherit; }
 .status-message, .error-message { margin: 24px 0 0; font-size: 13px; line-height: 1.5; }
 .status-message { color: var(--muted); }
 .error-message { color: #9d2c22; }
+.discovery-results { margin-top: 28px; border-top: 1px solid var(--line); }
+.results-heading { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.results-heading p { margin: 0 0 4px; color: #637c08; font-size: 9px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+.results-heading h2 { margin: 0; font-family: Georgia, 'Times New Roman', serif; font-size: 20px; font-weight: 400; letter-spacing: -.025em; }
+.results-heading > button { border: 0; background: transparent; padding: 5px 0; color: var(--muted); cursor: pointer; font-size: 11px; }
+.result-list { max-height: 326px; overflow-y: auto; border-top: 1px solid var(--line); scrollbar-width: thin; }
+.podcast-result, .episode-result { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; cursor: pointer; text-align: left; }
+.podcast-result { min-height: 70px; display: grid; grid-template-columns: 48px 1fr auto; align-items: center; gap: 14px; padding: 10px 4px 10px 0; }
+.episode-result { min-height: 64px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 16px; padding: 12px 7px 12px 0; }
+.podcast-result:hover, .episode-result:hover { background: #ebe8df; }
+.podcast-result:disabled, .episode-result:disabled { cursor: wait; opacity: .5; }
+.result-artwork { width: 48px; height: 48px; border-radius: 6px; background: #dedad0 center / cover no-repeat; }
+.result-copy { min-width: 0; display: grid; gap: 5px; }
+.result-copy strong { overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 600; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.result-copy small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.result-arrow { color: var(--muted); font-size: 17px; }
 .loader { width: 14px; height: 14px; border: 2px solid #ffffff55; border-top-color: white; border-radius: 50%; animation: spin .8s linear infinite; }
 .listening-view { width: min(1180px, 100%); height: 100%; margin: 0 auto; display: grid; grid-template-rows: auto 1fr auto; padding-top: 26px; }
 .episode-meta { display: flex; align-items: end; justify-content: space-between; gap: 24px; }
@@ -79,6 +95,7 @@ button { color: inherit; }
   .translation-sentence { font-size: 22px; }
   .episode-meta h2 { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .form-meta { flex-wrap: wrap; }
+  .result-list { max-height: 300px; }
   .control-button { margin-right: 25px; }
   .speed-control { margin-left: 25px; }
 }

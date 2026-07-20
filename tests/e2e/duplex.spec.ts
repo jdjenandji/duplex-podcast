@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { getDemoEpisode } from "../../lib/demo";
 
 async function waitForApp(page: import("@playwright/test").Page) {
   await expect(page.locator("main[data-hydrated=true]")).toBeVisible();
@@ -50,7 +51,47 @@ test("handles processing errors without disrupting the page", async ({ page }) =
   await page.route("**/api/episodes", (route) => route.fulfill({ status: 422, contentType: "application/json", body: JSON.stringify({ error: "No playable audio was found in this episode." }) }));
   await page.goto("/");
   await waitForApp(page);
-  await page.getByLabel("Podcast feed or episode URL").fill("https://example.com/not-a-podcast");
+  await page.getByLabel("Podcast name or link").fill("https://example.com/not-a-podcast");
   await page.getByRole("button", { name: "Listen" }).click();
   await expect(page.locator(".error-message")).toContainText("No playable audio");
+});
+
+test("searches for a show and lets the listener choose an episode", async ({ page }) => {
+  await page.route("**/api/podcasts/search?**", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ podcasts: [{
+      id: "123",
+      title: "Make Economy Great Again",
+      author: "WELT",
+      feedUrl: "https://example.com/feed.xml",
+    }] }),
+  }));
+  await page.route("**/api/podcasts/episodes", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ episodes: [{
+      sourceUrl: "https://example.com/episode-2",
+      feedUrl: "https://example.com/feed.xml",
+      audioUrl: "https://example.com/episode-2.mp3",
+      title: "Die neue Weltordnung",
+      duration: 1200,
+      publishedAt: "2026-07-20T08:00:00Z",
+    }] }),
+  }));
+  await page.route("**/api/episodes", async (route) => {
+    const request = route.request().postDataJSON();
+    expect(request.episode.title).toBe("Die neue Weltordnung");
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      ...getDemoEpisode("en"),
+      title: request.episode.title,
+    }) });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Podcast name or link").fill("Make Economy Great Again");
+  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: /Make Economy Great Again/ }).click();
+  await page.getByRole("button", { name: /Die neue Weltordnung/ }).click();
+
+  await expect(page.getByText("Die neue Weltordnung")).toBeVisible();
+  await expect(page.getByText(/Wenn wir eine neue Sprache lernen/)).toBeVisible();
 });

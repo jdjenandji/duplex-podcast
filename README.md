@@ -5,6 +5,9 @@ Duplex is a minimal podcast player for language learners. It shows only the sent
 ## What works
 
 - Open RSS feed resolution (latest playable episode)
+- Podcast show search through Apple’s podcast directory
+- Recent-episode selection from a show’s RSS feed
+- Apple Podcasts, podcast website, RSS, and direct-audio link resolution
 - Podcasting 2.0 official transcript discovery
 - OpenAI timestamped transcription fallback
 - Literal, sentence-level OpenAI translation
@@ -45,4 +48,4 @@ Import the GitHub repository into Vercel, add the environment variables from `.e
 
 ## Architecture
 
-`POST /api/episodes` validates and resolves a URL, checks Supabase, discovers an official timed transcript or sends the temporary audio blob to OpenAI, translates in bounded batches, then caches the episode, timed sentence rows, and target-language translations. The browser receives only the processed episode payload and synchronizes it against the native audio element.
+`GET /api/podcasts/search` finds shows, and `POST /api/podcasts/episodes` reads the selected show’s RSS feed without processing audio. `POST /api/episodes` then validates the selected episode or resolves a pasted link, checks Supabase, discovers an official timed transcript or sends the opening audio chunk to OpenAI, translates in bounded batches, and caches the result. The browser receives only the processed episode payload and synchronizes it against the native audio element.

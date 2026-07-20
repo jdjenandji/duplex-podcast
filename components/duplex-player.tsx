@@ -6,10 +6,11 @@ import {
   Pause,
   Play,
   RotateCcw,
+  Search,
   Sparkles,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import type { EpisodePayload } from "@/lib/types";
+import type { EpisodePayload, EpisodeSelection, PodcastSearchResult } from "@/lib/types";
 import { findActiveSegment, formatTime } from "@/lib/timing";
 
 const DEMO_URL = "https://demo.duplex.app/deutschlandfunk-kultur.xml";
@@ -25,9 +26,25 @@ const TARGET_LANGUAGES = [
 
 type Status = "idle" | "loading" | "ready" | "error";
 
+function isWebUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function shortDate(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "";
+  return new Intl.DateTimeFormat("en", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(date);
+}
+
 export function DuplexPlayer() {
   const audioRef = useRef<HTMLAudioElement>(null);
-  const [url, setUrl] = useState("");
+  const [query, setQuery] = useState("");
   const [targetLanguage, setTargetLanguage] = useState("en");
   const [customLanguage, setCustomLanguage] = useState("");
   const [status, setStatus] = useState<Status>("idle");
@@ -37,23 +54,28 @@ export function DuplexPlayer() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [rate, setRate] = useState(1);
   const [error, setError] = useState("");
+  const [isDiscovering, setIsDiscovering] = useState(false);
+  const [discoveryMessage, setDiscoveryMessage] = useState("");
+  const [podcasts, setPodcasts] = useState<PodcastSearchResult[]>([]);
+  const [episodeChoices, setEpisodeChoices] = useState<EpisodeSelection[]>([]);
+  const [selectedPodcastTitle, setSelectedPodcastTitle] = useState("");
 
   const activeIndex = useMemo(
     () => findActiveSegment(episode?.segments ?? [], currentTime),
     [episode?.segments, currentTime],
   );
   const activeSegment = episode?.segments[activeIndex] ?? null;
+  const busy = status === "loading" || isDiscovering;
+  const queryIsUrl = isWebUrl(query.trim());
 
   useEffect(() => {
     const audio = audioRef.current;
     if (audio) audio.playbackRate = rate;
   }, [rate]);
 
-  async function loadEpisode(event?: FormEvent, overrideUrl?: string) {
-    event?.preventDefault();
-    const submittedUrl = (overrideUrl ?? url).trim();
+  async function loadEpisode(source: string | EpisodeSelection) {
     const selectedLanguage = targetLanguage === "custom" ? customLanguage.trim() : targetLanguage;
-    if (!submittedUrl || !selectedLanguage) return;
+    if (!selectedLanguage) return;
 
     setStatus("loading");
     setError("");
@@ -64,7 +86,9 @@ export function DuplexPlayer() {
       const response = await fetch("/api/episodes", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: submittedUrl, targetLanguage: selectedLanguage }),
+        body: JSON.stringify(typeof source === "string"
+          ? { url: source, targetLanguage: selectedLanguage }
+          : { episode: source, targetLanguage: selectedLanguage }),
       });
       const body = (await response.json()) as EpisodePayload & { error?: string };
       if (!response.ok) throw new Error(body.error || "This episode could not be prepared.");
@@ -75,6 +99,59 @@ export function DuplexPlayer() {
       setError(cause instanceof Error ? cause.message : "This episode could not be prepared.");
       setStatus("error");
     }
+  }
+
+  async function searchForPodcasts() {
+    setIsDiscovering(true);
+    setDiscoveryMessage("Searching podcasts…");
+    setError("");
+    setStatus("idle");
+    setEpisodeChoices([]);
+    try {
+      const response = await fetch(`/api/podcasts/search?q=${encodeURIComponent(query.trim())}`);
+      const body = await response.json() as { podcasts?: PodcastSearchResult[]; error?: string };
+      if (!response.ok) throw new Error(body.error || "Podcast search failed.");
+      if (!body.podcasts?.length) throw new Error("No podcasts matched that search.");
+      setPodcasts(body.podcasts);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Podcast search failed.");
+      setStatus("error");
+    } finally {
+      setIsDiscovering(false);
+      setDiscoveryMessage("");
+    }
+  }
+
+  async function loadPodcastEpisodes(podcast: PodcastSearchResult) {
+    setIsDiscovering(true);
+    setDiscoveryMessage("Loading recent episodes…");
+    setError("");
+    setStatus("idle");
+    try {
+      const response = await fetch("/api/podcasts/episodes", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ feedUrl: podcast.feedUrl }),
+      });
+      const body = await response.json() as { episodes?: EpisodeSelection[]; error?: string };
+      if (!response.ok) throw new Error(body.error || "The podcast episodes could not be loaded.");
+      setSelectedPodcastTitle(podcast.title);
+      setEpisodeChoices(body.episodes ?? []);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The podcast episodes could not be loaded.");
+      setStatus("error");
+    } finally {
+      setIsDiscovering(false);
+      setDiscoveryMessage("");
+    }
+  }
+
+  function submitEntry(event: FormEvent) {
+    event.preventDefault();
+    const value = query.trim();
+    if (!value) return;
+    if (isWebUrl(value)) void loadEpisode(value);
+    else void searchForPodcasts();
   }
 
   function reset() {
@@ -124,26 +201,34 @@ export function DuplexPlayer() {
             <p className="eyebrow">Native podcasts, made clear</p>
             <h1>One sentence.<br />One translation.</h1>
             <p className="intro">
-              Paste a podcast feed and follow every spoken sentence in real time—without interrupting the audio.
+              Search for a show or paste a podcast link, then follow every spoken sentence in real time.
             </p>
           </div>
 
-          <form className="url-form" onSubmit={loadEpisode}>
-            <label htmlFor="podcast-url">Podcast feed or episode URL</label>
+          <form className="url-form" onSubmit={submitEntry}>
+            <label htmlFor="podcast-query">Podcast name or link</label>
             <div className="url-row">
               <input
-                id="podcast-url"
-                type="url"
-                inputMode="url"
-                value={url}
-                onChange={(event) => setUrl(event.target.value)}
-                placeholder="Paste a podcast URL"
-                disabled={status === "loading"}
+                id="podcast-query"
+                type="text"
+                inputMode="search"
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setPodcasts([]);
+                  setEpisodeChoices([]);
+                  setError("");
+                  if (status === "error") setStatus("idle");
+                }}
+                placeholder="Search or paste a podcast link"
+                disabled={busy}
                 required
               />
-              <button className="primary-button" type="submit" disabled={status === "loading" || !url.trim()}>
-                {status === "loading" ? <span className="loader" /> : <Play size={18} fill="currentColor" />}
-                {status === "loading" ? "Preparing" : "Listen"}
+              <button className="primary-button" type="submit" disabled={busy || !query.trim()}>
+                {busy ? <span className="loader" /> : queryIsUrl
+                  ? <Play size={18} fill="currentColor" />
+                  : <Search size={17} />}
+                {busy ? "Working" : queryIsUrl ? "Listen" : "Search"}
               </button>
             </div>
 
@@ -171,16 +256,77 @@ export function DuplexPlayer() {
                 type="button"
                 className="demo-button"
                 onClick={() => {
-                  setUrl(DEMO_URL);
-                  void loadEpisode(undefined, DEMO_URL);
+                  setQuery(DEMO_URL);
+                  void loadEpisode(DEMO_URL);
                 }}
-                disabled={status === "loading"}
+                disabled={busy}
               >
                 <Sparkles size={14} /> Try the demo
               </button>
             </div>
+            {isDiscovering && <p className="status-message">{discoveryMessage}</p>}
             {status === "loading" && <p className="status-message">Finding the transcript and preparing a literal translation…</p>}
             {status === "error" && <p className="error-message" role="alert">{error}</p>}
+
+            {episodeChoices.length > 0 ? (
+              <div className="discovery-results" aria-label={`Episodes from ${selectedPodcastTitle}`}>
+                <div className="results-heading">
+                  <div>
+                    <p>Choose an episode</p>
+                    <h2>{selectedPodcastTitle}</h2>
+                  </div>
+                  <button type="button" onClick={() => setEpisodeChoices([])}>Back to shows</button>
+                </div>
+                <div className="result-list">
+                  {episodeChoices.map((choice) => (
+                    <button
+                      className="episode-result"
+                      type="button"
+                      key={`${choice.audioUrl}-${choice.title}`}
+                      onClick={() => void loadEpisode(choice)}
+                      disabled={busy}
+                    >
+                      <span className="result-copy">
+                        <strong>{choice.title}</strong>
+                        <small>{[shortDate(choice.publishedAt), choice.duration ? formatTime(choice.duration) : ""].filter(Boolean).join(" · ")}</small>
+                      </span>
+                      <Play size={14} fill="currentColor" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : podcasts.length > 0 ? (
+              <div className="discovery-results" aria-label="Podcast search results">
+                <div className="results-heading">
+                  <div>
+                    <p>Shows</p>
+                    <h2>Select a podcast</h2>
+                  </div>
+                </div>
+                <div className="result-list">
+                  {podcasts.map((podcast) => (
+                    <button
+                      className="podcast-result"
+                      type="button"
+                      key={podcast.id}
+                      onClick={() => void loadPodcastEpisodes(podcast)}
+                      disabled={busy}
+                    >
+                      <span
+                        className="result-artwork"
+                        style={podcast.artworkUrl ? { backgroundImage: `url(${podcast.artworkUrl})` } : undefined}
+                        aria-hidden="true"
+                      />
+                      <span className="result-copy">
+                        <strong>{podcast.title}</strong>
+                        <small>{podcast.author}</small>
+                      </span>
+                      <span className="result-arrow">→</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </form>
         </section>
       ) : (

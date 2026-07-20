@@ -1,16 +1,8 @@
 import { XMLParser } from "fast-xml-parser";
-import type { EpisodePayload, TranscriptSegment } from "./types";
+import type { EpisodePayload, EpisodeSelection, TranscriptSegment } from "./types";
 
 type RawSegment = Omit<TranscriptSegment, "id" | "translatedText">;
-type ResolvedEpisode = {
-  sourceUrl: string;
-  feedUrl: string;
-  audioUrl: string;
-  title: string;
-  duration: number;
-  artworkUrl?: string;
-  officialTranscriptUrl?: string;
-};
+type XmlRecord = Record<string, unknown>;
 
 const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_", textNodeName: "#text" });
 const MEBIBYTE = 1024 * 1024;
@@ -31,6 +23,16 @@ function list<T>(value: T | T[] | undefined): T[] {
   return Array.isArray(value) ? value : [value];
 }
 
+function xmlRecord(value: unknown): XmlRecord {
+  return typeof value === "object" && value !== null ? value as XmlRecord : {};
+}
+
+function xmlText(value: unknown): string | undefined {
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  const text = xmlRecord(value)["#text"];
+  return typeof text === "string" || typeof text === "number" ? String(text) : undefined;
+}
+
 function secondsFromDuration(value: unknown) {
   if (typeof value === "number") return value;
   if (typeof value !== "string") return 0;
@@ -45,13 +47,69 @@ async function fetchText(url: string) {
   return { text: await response.text(), contentType: response.headers.get("content-type") ?? "" };
 }
 
-export async function resolveEpisode(sourceUrl: string): Promise<ResolvedEpisode> {
+function parseFeedEpisodes(text: string, feedUrl: string): EpisodeSelection[] {
+  const document = xmlRecord(parser.parse(text));
+  const rss = xmlRecord(document.rss);
+  const channel = xmlRecord(rss.channel ?? document.feed);
+  const items = list(channel.item ?? channel.entry);
+
+  return items.flatMap((value) => {
+    const item = xmlRecord(value);
+    const enclosure = xmlRecord(item.enclosure ?? item["media:content"]);
+    const rawAudioUrl = xmlText(enclosure["@_url"] ?? enclosure["@_href"] ?? enclosure.url);
+    if (!rawAudioUrl) return [];
+    const audioUrl = new URL(rawAudioUrl, feedUrl).toString();
+    const transcript = xmlRecord(list(item["podcast:transcript"])[0]);
+    const itemImage = xmlRecord(item["itunes:image"]);
+    const channelImage = xmlRecord(channel["itunes:image"]);
+    const fallbackImage = xmlRecord(channel.image);
+    const rawArtwork = xmlText(itemImage["@_href"] ?? channelImage["@_href"] ?? fallbackImage.url);
+    const itemLink = xmlRecord(item.link);
+    const rawSourceUrl = xmlText(item.link)
+      ?? xmlText(itemLink["@_href"])
+      ?? xmlText(item.guid)
+      ?? audioUrl;
+    const rawTranscriptUrl = xmlText(transcript["@_url"]);
+
+    return [{
+      sourceUrl: new URL(rawSourceUrl, feedUrl).toString(),
+      feedUrl,
+      audioUrl,
+      title: xmlText(item.title) ?? xmlText(channel.title) ?? "Podcast episode",
+      duration: secondsFromDuration(xmlText(item["itunes:duration"])),
+      artworkUrl: rawArtwork ? new URL(rawArtwork, feedUrl).toString() : undefined,
+      officialTranscriptUrl: rawTranscriptUrl ? new URL(rawTranscriptUrl, feedUrl).toString() : undefined,
+      publishedAt: xmlText(item.pubDate ?? item.published ?? item.updated ?? item["dc:date"]),
+    }];
+  });
+}
+
+async function appleFeedUrl(sourceUrl: string): Promise<string | null> {
+  const parsed = new URL(sourceUrl);
+  if (!/(^|\.)podcasts\.apple\.com$/i.test(parsed.hostname)) return null;
+  const id = parsed.pathname.match(/id(\d+)/)?.[1];
+  if (!id) return null;
+  const response = await fetch(`https://itunes.apple.com/lookup?id=${id}&entity=podcast`);
+  if (!response.ok) return null;
+  const body = await response.json() as { results?: Array<{ feedUrl?: string }> };
+  return body.results?.find((result) => result.feedUrl)?.feedUrl ?? null;
+}
+
+export async function listFeedEpisodes(feedUrl: string): Promise<EpisodeSelection[]> {
+  const { text } = await fetchText(feedUrl);
+  if (!/<(rss|feed)\b/i.test(text)) throw new Error("This URL does not contain a podcast feed.");
+  const episodes = parseFeedEpisodes(text, feedUrl);
+  if (!episodes.length) throw new Error("This feed does not contain a playable episode.");
+  return episodes;
+}
+
+export async function resolveEpisode(sourceUrl: string): Promise<EpisodeSelection> {
   const directAudio = /\.(mp3|m4a|aac|ogg|wav)(\?|$)/i.test(sourceUrl);
   if (directAudio) {
     return { sourceUrl, feedUrl: sourceUrl, audioUrl: sourceUrl, title: "Podcast episode", duration: 0 };
   }
 
-  let feedUrl = sourceUrl;
+  let feedUrl = await appleFeedUrl(sourceUrl) ?? sourceUrl;
   let fetched = await fetchText(feedUrl);
   if (!/(rss|xml|atom)/i.test(fetched.contentType) && !/^\s*</.test(fetched.text)) {
     throw new Error("This does not look like a podcast feed or episode URL.");
@@ -63,27 +121,9 @@ export async function resolveEpisode(sourceUrl: string): Promise<ResolvedEpisode
     feedUrl = new URL(alternate[1], sourceUrl).toString();
     fetched = await fetchText(feedUrl);
   }
-
-  const document = parser.parse(fetched.text);
-  const channel = document?.rss?.channel ?? document?.feed;
-  const items = list(channel?.item ?? channel?.entry);
-  const item = items.find((candidate: Record<string, unknown>) => candidate.enclosure || candidate["media:content"]) ?? items[0];
-  if (!item) throw new Error("This feed does not contain a podcast episode.");
-
-  const enclosure = item.enclosure ?? item["media:content"];
-  const audioUrl = enclosure?.["@_url"] ?? enclosure?.["@_href"] ?? enclosure?.url;
-  if (!audioUrl) throw new Error("No playable audio was found in this episode.");
-  const transcript = list(item["podcast:transcript"])[0];
-  const image = item["itunes:image"]?.["@_href"] ?? channel?.["itunes:image"]?.["@_href"] ?? channel?.image?.url;
-  return {
-    sourceUrl,
-    feedUrl,
-    audioUrl: new URL(String(audioUrl), feedUrl).toString(),
-    title: String(item.title?.["#text"] ?? item.title ?? channel?.title ?? "Podcast episode"),
-    duration: secondsFromDuration(item["itunes:duration"]),
-    artworkUrl: image ? String(image) : undefined,
-    officialTranscriptUrl: transcript?.["@_url"] ? new URL(String(transcript["@_url"]), feedUrl).toString() : undefined,
-  };
+  const [episode] = parseFeedEpisodes(fetched.text, feedUrl);
+  if (!episode) throw new Error("No playable audio was found in this episode.");
+  return { ...episode, sourceUrl };
 }
 
 function parseTimestamp(value: string) {
@@ -240,10 +280,7 @@ async function cacheEpisode(payload: EpisodePayload, feedUrl: string) {
     headers: { Prefer: "resolution=merge-duplicates" }, body: JSON.stringify(translations) });
 }
 
-export async function processEpisode(sourceUrl: string, targetLanguage: string): Promise<EpisodePayload> {
-  const cached = await getCachedEpisode(sourceUrl, targetLanguage);
-  if (cached) return cached;
-  const resolved = await resolveEpisode(sourceUrl);
+async function prepareResolvedEpisode(resolved: EpisodeSelection, targetLanguage: string): Promise<EpisodePayload> {
   let segments: RawSegment[] = [];
   let sourceLanguage = "und";
   let transcriptSource: "official" | "generated" = "generated";
@@ -260,11 +297,27 @@ export async function processEpisode(sourceUrl: string, targetLanguage: string):
   if (!segments.length) throw new Error("The transcript did not contain timed sentences.");
   const translated = await translateSegments(segments, targetLanguage);
   const payload: EpisodePayload = {
-    id: crypto.randomUUID(), sourceUrl, audioUrl: resolved.audioUrl, title: resolved.title,
+    id: crypto.randomUUID(), sourceUrl: resolved.sourceUrl, audioUrl: resolved.audioUrl, title: resolved.title,
     duration: resolved.duration || segments.at(-1)?.endTime || 0, sourceLanguage, targetLanguage,
     artworkUrl: resolved.artworkUrl, cached: false, transcriptSource,
     segments: segments.map((segment, index) => ({ ...segment, id: `${index + 1}`, translatedText: translated[index] })),
   };
   await cacheEpisode(payload, resolved.feedUrl);
   return payload;
+}
+
+export async function processEpisodeSelection(
+  selection: EpisodeSelection,
+  targetLanguage: string,
+): Promise<EpisodePayload> {
+  const cached = await getCachedEpisode(selection.sourceUrl, targetLanguage);
+  if (cached) return cached;
+  return prepareResolvedEpisode(selection, targetLanguage);
+}
+
+export async function processEpisode(sourceUrl: string, targetLanguage: string): Promise<EpisodePayload> {
+  const cached = await getCachedEpisode(sourceUrl, targetLanguage);
+  if (cached) return cached;
+  const resolved = await resolveEpisode(sourceUrl);
+  return prepareResolvedEpisode(resolved, targetLanguage);
 }

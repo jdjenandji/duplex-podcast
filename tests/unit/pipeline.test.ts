@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   firstAudioChunkEnd,
+  listFeedEpisodes,
   transcribeAudio,
   TRANSCRIPTION_CHUNK_BYTES,
 } from "../../lib/pipeline";
@@ -15,6 +16,38 @@ test("limits large episode transcription to the first provider-safe chunk", () =
 
 test("keeps all of a small episode in the first transcription chunk", () => {
   assert.equal(firstAudioChunkEnd(1024), 1024);
+});
+
+test("lists recent playable episodes from a podcast feed", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(`<?xml version="1.0"?>
+    <rss><channel><title>Example Show</title>
+      <itunes:image href="https://example.com/show.jpg" />
+      <item>
+        <title>Episode Two</title><link>https://example.com/two</link>
+        <pubDate>Mon, 20 Jul 2026 08:00:00 GMT</pubDate>
+        <itunes:duration>12:34</itunes:duration>
+        <enclosure url="https://cdn.example.com/two.mp3" type="audio/mpeg" />
+      </item>
+      <item><title>Episode One</title><enclosure url="https://cdn.example.com/one.mp3" /></item>
+    </channel></rss>`, { headers: { "content-type": "application/rss+xml" } });
+
+  try {
+    const episodes = await listFeedEpisodes("https://example.com/feed.xml");
+    assert.equal(episodes.length, 2);
+    assert.deepEqual(episodes[0], {
+      sourceUrl: "https://example.com/two",
+      feedUrl: "https://example.com/feed.xml",
+      audioUrl: "https://cdn.example.com/two.mp3",
+      title: "Episode Two",
+      duration: 754,
+      artworkUrl: "https://example.com/show.jpg",
+      officialTranscriptUrl: undefined,
+      publishedAt: "Mon, 20 Jul 2026 08:00:00 GMT",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("requests and uploads only the opening audio chunk", async () => {

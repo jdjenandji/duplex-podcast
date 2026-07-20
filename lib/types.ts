@@ -19,3 +19,22 @@ export type EpisodePayload = {
   transcriptSource: "official" | "generated" | "demo";
   segments: TranscriptSegment[];
 };
+
+export type PodcastSearchResult = {
+  id: string;
+  title: string;
+  author: string;
+  feedUrl: string;
+  artworkUrl?: string;
+};
+
+export type EpisodeSelection = {
+  sourceUrl: string;
+  feedUrl: string;
+  audioUrl: string;
+  title: string;
+  duration: number;
+  artworkUrl?: string;
+  officialTranscriptUrl?: string;
+  publishedAt?: string;
+};
