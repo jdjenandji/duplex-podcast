@@ -121,7 +121,7 @@ async function getOfficialTranscript(url: string): Promise<RawSegment[]> {
   return parseTimedText(text);
 }
 
-async function transcribeAudio(audioUrl: string): Promise<{ language: string; segments: RawSegment[] }> {
+export async function transcribeAudio(audioUrl: string): Promise<{ language: string; segments: RawSegment[] }> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("No official transcript was found. Add OPENAI_API_KEY to generate one.");
   const audioResponse = await fetch(audioUrl, {
