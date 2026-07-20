@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   firstAudioChunkEnd,
+  listCachedEpisodes,
   listFeedEpisodes,
   transcribeAudio,
   TRANSCRIPTION_CHUNK_BYTES,
@@ -16,6 +17,43 @@ test("limits large episode transcription to the first provider-safe chunk", () =
 
 test("keeps all of a small episode in the first transcription chunk", () => {
   assert.equal(firstAudioChunkEnd(1024), 1024);
+});
+
+test("lists recent cached episodes as ready-to-play examples", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalUrl = process.env.SUPABASE_URL;
+  const originalKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.SUPABASE_URL = "https://project.supabase.co";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-key";
+  globalThis.fetch = async (input) => {
+    assert.match(String(input), /episodes\?select=/);
+    assert.match(String(input), /limit=6/);
+    return Response.json([{
+      source_url: "https://example.com/episode",
+      feed_url: "https://example.com/feed.xml",
+      audio_url: "https://cdn.example.com/episode.mp3",
+      title: "A cached episode",
+      duration_seconds: 900,
+      artwork_url: "https://example.com/art.jpg",
+    }]);
+  };
+
+  try {
+    assert.deepEqual(await listCachedEpisodes(), [{
+      sourceUrl: "https://example.com/episode",
+      feedUrl: "https://example.com/feed.xml",
+      audioUrl: "https://cdn.example.com/episode.mp3",
+      title: "A cached episode",
+      duration: 900,
+      artworkUrl: "https://example.com/art.jpg",
+    }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = originalUrl;
+    if (originalKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = originalKey;
+  }
 });
 
 test("lists recent playable episodes from a podcast feed", async () => {

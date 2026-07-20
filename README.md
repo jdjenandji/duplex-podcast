@@ -7,6 +7,7 @@ Duplex is a minimal podcast player for language learners. It shows only the sent
 - Open RSS feed resolution (latest playable episode)
 - Podcast show search through Apple’s podcast directory
 - Recent-episode selection from a show’s RSS feed
+- Ready-to-play examples sourced from episodes already cached in Supabase
 - Apple Podcasts, podcast website, RSS, and direct-audio link resolution
 - Podcasting 2.0 official transcript discovery
 - OpenAI timestamped transcription fallback

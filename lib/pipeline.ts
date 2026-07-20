@@ -240,6 +240,23 @@ async function supabaseRequest(path: string, init?: RequestInit) {
   return response;
 }
 
+export async function listCachedEpisodes(limit = 6): Promise<EpisodeSelection[]> {
+  if (!supabaseConfig()) return [];
+  const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 12));
+  const response = await supabaseRequest(
+    `episodes?select=source_url,feed_url,audio_url,title,duration_seconds,artwork_url,created_at&order=created_at.desc&limit=${safeLimit}`,
+  );
+  const rows = await response!.json() as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    sourceUrl: String(row.source_url),
+    feedUrl: String(row.feed_url),
+    audioUrl: String(row.audio_url),
+    title: String(row.title),
+    duration: Number(row.duration_seconds || 0),
+    artworkUrl: row.artwork_url ? String(row.artwork_url) : undefined,
+  }));
+}
+
 export async function getCachedEpisode(sourceUrl: string, targetLanguage: string): Promise<EpisodePayload | null> {
   if (!supabaseConfig()) return null;
   const episodeResponse = await supabaseRequest(`episodes?source_url=eq.${encodeURIComponent(sourceUrl)}&select=*&limit=1`);

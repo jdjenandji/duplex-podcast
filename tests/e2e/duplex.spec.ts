@@ -57,6 +57,16 @@ test("handles processing errors without disrupting the page", async ({ page }) =
 });
 
 test("searches for a show and lets the listener choose an episode", async ({ page }) => {
+  await page.route("**/api/podcasts/cached", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ episodes: [{
+      sourceUrl: "https://example.com/cached-episode",
+      feedUrl: "https://example.com/feed.xml",
+      audioUrl: "https://example.com/cached-episode.mp3",
+      title: "A ready German episode",
+      duration: 900,
+    }] }),
+  }));
   await page.route("**/api/podcasts/search?**", (route) => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify({ podcasts: [{
@@ -79,7 +89,6 @@ test("searches for a show and lets the listener choose an episode", async ({ pag
   }));
   await page.route("**/api/episodes", async (route) => {
     const request = route.request().postDataJSON();
-    expect(request.episode.title).toBe("Die neue Weltordnung");
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({
       ...getDemoEpisode("en"),
       title: request.episode.title,
@@ -87,6 +96,10 @@ test("searches for a show and lets the listener choose an episode", async ({ pag
   });
 
   await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Cached examples" })).toBeVisible();
+  await page.getByRole("button", { name: /A ready German episode/ }).click();
+  await expect(page.getByText("A ready German episode")).toBeVisible();
+  await page.getByRole("button", { name: "New episode" }).click();
   await page.getByLabel("Podcast name or link").fill("Make Economy Great Again");
   await page.getByRole("button", { name: "Search" }).click();
   await page.getByRole("button", { name: /Make Economy Great Again/ }).click();

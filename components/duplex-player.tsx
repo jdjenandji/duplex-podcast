@@ -59,6 +59,7 @@ export function DuplexPlayer() {
   const [podcasts, setPodcasts] = useState<PodcastSearchResult[]>([]);
   const [episodeChoices, setEpisodeChoices] = useState<EpisodeSelection[]>([]);
   const [selectedPodcastTitle, setSelectedPodcastTitle] = useState("");
+  const [cachedExamples, setCachedExamples] = useState<EpisodeSelection[]>([]);
 
   const activeIndex = useMemo(
     () => findActiveSegment(episode?.segments ?? [], currentTime),
@@ -67,6 +68,17 @@ export function DuplexPlayer() {
   const activeSegment = episode?.segments[activeIndex] ?? null;
   const busy = status === "loading" || isDiscovering;
   const queryIsUrl = isWebUrl(query.trim());
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/podcasts/cached")
+      .then((response) => response.json())
+      .then((body: { episodes?: EpisodeSelection[] }) => {
+        if (!cancelled) setCachedExamples(body.episodes ?? []);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -322,6 +334,37 @@ export function DuplexPlayer() {
                         <small>{podcast.author}</small>
                       </span>
                       <span className="result-arrow">→</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : cachedExamples.length > 0 ? (
+              <div className="discovery-results cached-examples" aria-label="Cached podcast examples">
+                <div className="results-heading">
+                  <div>
+                    <p>Ready to listen</p>
+                    <h2>Cached examples</h2>
+                  </div>
+                </div>
+                <div className="result-list">
+                  {cachedExamples.map((choice) => (
+                    <button
+                      className="podcast-result"
+                      type="button"
+                      key={choice.sourceUrl}
+                      onClick={() => void loadEpisode(choice)}
+                      disabled={busy}
+                    >
+                      <span
+                        className="result-artwork"
+                        style={choice.artworkUrl ? { backgroundImage: `url(${choice.artworkUrl})` } : undefined}
+                        aria-hidden="true"
+                      />
+                      <span className="result-copy">
+                        <strong>{choice.title}</strong>
+                        <small>{choice.duration ? `${formatTime(choice.duration)} · Cached` : "Cached"}</small>
+                      </span>
+                      <Play size={14} fill="currentColor" />
                     </button>
                   ))}
                 </div>
