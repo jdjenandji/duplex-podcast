@@ -96,7 +96,7 @@ test("searches for a show and lets the listener choose an episode", async ({ pag
   });
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Cached examples" })).toBeVisible();
+  await expect(page.getByText("Ready to listen", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /A ready German episode/ }).click();
   await expect(page.getByText("A ready German episode")).toBeVisible();
   await page.getByRole("button", { name: "New episode" }).click();

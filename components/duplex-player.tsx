@@ -339,11 +339,10 @@ export function DuplexPlayer() {
                 </div>
               </div>
             ) : cachedExamples.length > 0 ? (
-              <div className="discovery-results cached-examples" aria-label="Cached podcast examples">
+              <div className="discovery-results cached-examples" aria-label="Ready to listen">
                 <div className="results-heading">
                   <div>
                     <p>Ready to listen</p>
-                    <h2>Cached examples</h2>
                   </div>
                 </div>
                 <div className="result-list">
