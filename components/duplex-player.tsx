@@ -10,6 +10,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import type { ProcessingProgress } from "@/lib/pipeline";
 import type { EpisodePayload, EpisodeSelection, PodcastSearchResult } from "@/lib/types";
 import { findActiveSegment, formatTime } from "@/lib/timing";
 
@@ -25,6 +26,16 @@ const TARGET_LANGUAGES = [
 ] as const;
 
 type Status = "idle" | "loading" | "ready" | "error";
+type ProcessingEvent =
+  | ({ type: "progress" } & ProcessingProgress)
+  | { type: "result"; episode: EpisodePayload }
+  | { type: "error"; error: string };
+
+const INITIAL_PROGRESS: ProcessingProgress = {
+  stage: "checking-cache",
+  message: "Checking for a saved transcript…",
+  progress: 5,
+};
 
 function isWebUrl(value: string) {
   try {
@@ -40,6 +51,11 @@ function shortDate(value?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return "";
   return new Intl.DateTimeFormat("en", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(date);
+}
+
+function elapsedLabel(seconds: number) {
+  if (seconds < 60) return `${seconds}s elapsed`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s elapsed`;
 }
 
 export function DuplexPlayer() {
@@ -60,6 +76,9 @@ export function DuplexPlayer() {
   const [episodeChoices, setEpisodeChoices] = useState<EpisodeSelection[]>([]);
   const [selectedPodcastTitle, setSelectedPodcastTitle] = useState("");
   const [cachedExamples, setCachedExamples] = useState<EpisodeSelection[]>([]);
+  const [processing, setProcessing] = useState<ProcessingProgress>(INITIAL_PROGRESS);
+  const [processingStartedAt, setProcessingStartedAt] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const activeIndex = useMemo(
     () => findActiveSegment(episode?.segments ?? [], currentTime),
@@ -85,6 +104,14 @@ export function DuplexPlayer() {
     if (audio) audio.playbackRate = rate;
   }, [rate]);
 
+  useEffect(() => {
+    if (status !== "loading" || processingStartedAt === null) return;
+    const updateElapsed = () => setElapsedSeconds(Math.floor((Date.now() - processingStartedAt) / 1000));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1_000);
+    return () => window.clearInterval(timer);
+  }, [processingStartedAt, status]);
+
   async function loadEpisode(source: string | EpisodeSelection) {
     const selectedLanguage = targetLanguage === "custom" ? customLanguage.trim() : targetLanguage;
     if (!selectedLanguage) return;
@@ -93,19 +120,58 @@ export function DuplexPlayer() {
     setError("");
     setIsPlaying(false);
     setCurrentTime(0);
+    setProcessing(INITIAL_PROGRESS);
+    setProcessingStartedAt(Date.now());
+    setElapsedSeconds(0);
 
     try {
       const response = await fetch("/api/episodes", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          accept: "application/x-ndjson, application/json",
+          "content-type": "application/json",
+        },
         body: JSON.stringify(typeof source === "string"
           ? { url: source, targetLanguage: selectedLanguage }
           : { episode: source, targetLanguage: selectedLanguage }),
       });
-      const body = (await response.json()) as EpisodePayload & { error?: string };
-      if (!response.ok) throw new Error(body.error || "This episode could not be prepared.");
-      setEpisode(body);
-      setDuration(body.duration);
+      if (!response.ok || !response.headers.get("content-type")?.includes("application/x-ndjson")) {
+        const body = (await response.json()) as EpisodePayload & { error?: string };
+        if (!response.ok) throw new Error(body.error || "This episode could not be prepared.");
+        setEpisode(body);
+        setDuration(body.duration);
+        setStatus("ready");
+        return;
+      }
+
+      if (!response.body) throw new Error("The processing updates could not be read.");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let preparedEpisode: EpisodePayload | null = null;
+
+      const readEvent = (line: string): EpisodePayload | undefined => {
+        if (!line.trim()) return undefined;
+        const event = JSON.parse(line) as ProcessingEvent;
+        if (event.type === "progress") setProcessing(event);
+        if (event.type === "error") throw new Error(event.error);
+        return event.type === "result" ? event.episode : undefined;
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          preparedEpisode = readEvent(line) ?? preparedEpisode;
+        }
+        if (done) break;
+      }
+      preparedEpisode = readEvent(buffer) ?? preparedEpisode;
+      if (!preparedEpisode) throw new Error("The episode finished processing without a result.");
+      setEpisode(preparedEpisode);
+      setDuration(preparedEpisode.duration);
       setStatus("ready");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "This episode could not be prepared.");
@@ -240,7 +306,7 @@ export function DuplexPlayer() {
                 {busy ? <span className="loader" /> : queryIsUrl
                   ? <Play size={18} fill="currentColor" />
                   : <Search size={17} />}
-                {busy ? "Working" : queryIsUrl ? "Listen" : "Search"}
+                {status === "loading" ? "Preparing" : isDiscovering ? "Searching" : queryIsUrl ? "Listen" : "Search"}
               </button>
             </div>
 
@@ -277,7 +343,23 @@ export function DuplexPlayer() {
               </button>
             </div>
             {isDiscovering && <p className="status-message">{discoveryMessage}</p>}
-            {status === "loading" && <p className="status-message">Finding the transcript and preparing a literal translation…</p>}
+            {status === "loading" && (
+              <div className="processing-status" role="status" aria-live="polite">
+                <div className="processing-copy">
+                  <span className="processing-motion" aria-hidden="true">
+                    <span /><span /><span />
+                  </span>
+                  <div>
+                    <p className="processing-label">Preparing your episode</p>
+                    <p className="processing-message">{processing.message}</p>
+                  </div>
+                  <span className="processing-time">{elapsedLabel(elapsedSeconds)}</span>
+                </div>
+                <div className="processing-track" aria-hidden="true">
+                  <span style={{ width: `${processing.progress}%` }} />
+                </div>
+              </div>
+            )}
             {status === "error" && <p className="error-message" role="alert">{error}</p>}
 
             {episodeChoices.length > 0 ? (

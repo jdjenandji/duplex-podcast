@@ -4,6 +4,23 @@ import type { EpisodePayload, EpisodeSelection, TranscriptSegment } from "./type
 type RawSegment = Omit<TranscriptSegment, "id" | "translatedText">;
 type XmlRecord = Record<string, unknown>;
 
+export type ProcessingStage =
+  | "checking-cache"
+  | "resolving"
+  | "finding-transcript"
+  | "transcribing"
+  | "translating"
+  | "saving"
+  | "ready";
+
+export type ProcessingProgress = {
+  stage: ProcessingStage;
+  message: string;
+  progress: number;
+};
+
+type ProgressReporter = (update: ProcessingProgress) => void;
+
 const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_", textNodeName: "#text" });
 const MEBIBYTE = 1024 * 1024;
 export const TRANSCRIPTION_CHUNK_BYTES = 20 * MEBIBYTE;
@@ -190,12 +207,25 @@ export async function transcribeAudio(audioUrl: string): Promise<{ language: str
   return { language: body.language || "und", segments };
 }
 
-async function translateSegments(segments: RawSegment[], targetLanguage: string) {
+async function translateSegments(
+  segments: RawSegment[],
+  targetLanguage: string,
+  onProgress?: ProgressReporter,
+) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY is required to translate this transcript.");
   const translations: string[] = [];
   for (let offset = 0; offset < segments.length; offset += 40) {
     const batch = segments.slice(offset, offset + 40);
+    const batchNumber = Math.floor(offset / 40) + 1;
+    const batchCount = Math.ceil(segments.length / 40);
+    onProgress?.({
+      stage: "translating",
+      message: batchCount > 1
+        ? `Creating a faithful line-by-line translation (${batchNumber} of ${batchCount})…`
+        : "Creating a faithful line-by-line translation…",
+      progress: 66 + Math.round((offset / segments.length) * 24),
+    });
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
@@ -215,6 +245,11 @@ async function translateSegments(segments: RawSegment[], targetLanguage: string)
     if (parsed.translations?.length !== batch.length) throw new Error("The translation provider returned an incomplete result.");
     translations.push(...parsed.translations);
   }
+  onProgress?.({
+    stage: "translating",
+    message: "The literal translation is complete.",
+    progress: 90,
+  });
   return translations;
 }
 
@@ -297,44 +332,90 @@ async function cacheEpisode(payload: EpisodePayload, feedUrl: string) {
     headers: { Prefer: "resolution=merge-duplicates" }, body: JSON.stringify(translations) });
 }
 
-async function prepareResolvedEpisode(resolved: EpisodeSelection, targetLanguage: string): Promise<EpisodePayload> {
+async function prepareResolvedEpisode(
+  resolved: EpisodeSelection,
+  targetLanguage: string,
+  onProgress?: ProgressReporter,
+): Promise<EpisodePayload> {
   let segments: RawSegment[] = [];
   let sourceLanguage = "und";
   let transcriptSource: "official" | "generated" = "generated";
+  onProgress?.({
+    stage: "finding-transcript",
+    message: "Looking for an official timed transcript…",
+    progress: 32,
+  });
   if (resolved.officialTranscriptUrl) {
     segments = await getOfficialTranscript(resolved.officialTranscriptUrl);
     transcriptSource = "official";
   }
   if (!segments.length) {
+    onProgress?.({
+      stage: "transcribing",
+      message: "Timing the opening audio sentence by sentence…",
+      progress: 48,
+    });
     const transcription = await transcribeAudio(resolved.audioUrl);
     segments = transcription.segments;
     sourceLanguage = transcription.language;
     transcriptSource = "generated";
   }
   if (!segments.length) throw new Error("The transcript did not contain timed sentences.");
-  const translated = await translateSegments(segments, targetLanguage);
+  const translated = await translateSegments(segments, targetLanguage, onProgress);
   const payload: EpisodePayload = {
     id: crypto.randomUUID(), sourceUrl: resolved.sourceUrl, audioUrl: resolved.audioUrl, title: resolved.title,
     duration: resolved.duration || segments.at(-1)?.endTime || 0, sourceLanguage, targetLanguage,
     artworkUrl: resolved.artworkUrl, cached: false, transcriptSource,
     segments: segments.map((segment, index) => ({ ...segment, id: `${index + 1}`, translatedText: translated[index] })),
   };
+  onProgress?.({
+    stage: "saving",
+    message: "Saving this transcript for faster listening next time…",
+    progress: 95,
+  });
   await cacheEpisode(payload, resolved.feedUrl);
+  onProgress?.({ stage: "ready", message: "Your episode is ready.", progress: 100 });
   return payload;
 }
 
 export async function processEpisodeSelection(
   selection: EpisodeSelection,
   targetLanguage: string,
+  onProgress?: ProgressReporter,
 ): Promise<EpisodePayload> {
+  onProgress?.({
+    stage: "checking-cache",
+    message: "Checking for a saved transcript…",
+    progress: 8,
+  });
   const cached = await getCachedEpisode(selection.sourceUrl, targetLanguage);
-  if (cached) return cached;
-  return prepareResolvedEpisode(selection, targetLanguage);
+  if (cached) {
+    onProgress?.({ stage: "ready", message: "Saved transcript found. Ready to listen.", progress: 100 });
+    return cached;
+  }
+  return prepareResolvedEpisode(selection, targetLanguage, onProgress);
 }
 
-export async function processEpisode(sourceUrl: string, targetLanguage: string): Promise<EpisodePayload> {
+export async function processEpisode(
+  sourceUrl: string,
+  targetLanguage: string,
+  onProgress?: ProgressReporter,
+): Promise<EpisodePayload> {
+  onProgress?.({
+    stage: "checking-cache",
+    message: "Checking for a saved transcript…",
+    progress: 8,
+  });
   const cached = await getCachedEpisode(sourceUrl, targetLanguage);
-  if (cached) return cached;
+  if (cached) {
+    onProgress?.({ stage: "ready", message: "Saved transcript found. Ready to listen.", progress: 100 });
+    return cached;
+  }
+  onProgress?.({
+    stage: "resolving",
+    message: "Finding the episode and its audio…",
+    progress: 18,
+  });
   const resolved = await resolveEpisode(sourceUrl);
-  return prepareResolvedEpisode(resolved, targetLanguage);
+  return prepareResolvedEpisode(resolved, targetLanguage, onProgress);
 }

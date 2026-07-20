@@ -48,11 +48,17 @@ test("playback controls play, pause, seek, go back, and change speed", async ({ 
 });
 
 test("handles processing errors without disrupting the page", async ({ page }) => {
-  await page.route("**/api/episodes", (route) => route.fulfill({ status: 422, contentType: "application/json", body: JSON.stringify({ error: "No playable audio was found in this episode." }) }));
+  await page.route("**/api/episodes", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await route.fulfill({ status: 422, contentType: "application/json", body: JSON.stringify({ error: "No playable audio was found in this episode." }) });
+  });
   await page.goto("/");
   await waitForApp(page);
   await page.getByLabel("Podcast name or link").fill("https://example.com/not-a-podcast");
   await page.getByRole("button", { name: "Listen" }).click();
+  await expect(page.getByText("Preparing your episode")).toBeVisible();
+  await expect(page.getByText("Checking for a saved transcript…")).toBeVisible();
+  await expect(page.locator(".processing-motion span").first()).toHaveCSS("animation-name", "processing-pulse");
   await expect(page.locator(".error-message")).toContainText("No playable audio");
 });
 

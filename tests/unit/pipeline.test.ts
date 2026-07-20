@@ -4,8 +4,10 @@ import {
   firstAudioChunkEnd,
   listCachedEpisodes,
   listFeedEpisodes,
+  processEpisodeSelection,
   transcribeAudio,
   TRANSCRIPTION_CHUNK_BYTES,
+  type ProcessingProgress,
 } from "../../lib/pipeline";
 
 test("limits large episode transcription to the first provider-safe chunk", () => {
@@ -127,6 +129,50 @@ test("requests and uploads only the opening audio chunk", async () => {
       endTime: 2.5,
       originalText: "Guten Tag",
     }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalApiKey;
+  }
+});
+
+test("reports actual processing stages while preparing an episode", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OPENAI_API_KEY;
+  const updates: ProcessingProgress[] = [];
+  process.env.OPENAI_API_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    if (String(input) === "https://example.com/transcript.vtt") {
+      return new Response("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nGuten Tag", {
+        headers: { "content-type": "text/vtt" },
+      });
+    }
+    if (String(input) === "https://api.openai.com/v1/chat/completions") {
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ translations: ["Good day"] }) } }] });
+    }
+    throw new Error(`Unexpected request: ${String(input)}`);
+  };
+
+  try {
+    const episode = await processEpisodeSelection({
+      sourceUrl: "https://example.com/episode",
+      feedUrl: "https://example.com/feed.xml",
+      audioUrl: "https://example.com/episode.mp3",
+      officialTranscriptUrl: "https://example.com/transcript.vtt",
+      title: "Example episode",
+      duration: 2,
+    }, "en", (update) => updates.push(update));
+
+    assert.equal(episode.segments[0].translatedText, "Good day");
+    assert.deepEqual(updates.map((update) => update.stage), [
+      "checking-cache",
+      "finding-transcript",
+      "translating",
+      "translating",
+      "saving",
+      "ready",
+    ]);
+    assert.deepEqual(updates.map((update) => update.progress), [8, 32, 66, 90, 95, 100]);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
